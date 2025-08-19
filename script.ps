@@ -1,0 +1,182 @@
+# ============================================
+# Azure DevOps: Teams -> Members (Direct + expand vssgp groups)
+# Windows PowerShell 5.1 compatible
+# ============================================
+
+$ErrorActionPreference = "Stop"
+
+# ---- CONFIG ----
+$org     = "https://dev.azure.com/ValmontInd"
+$project = "Corp Shared Services"
+$outDir  = "C:\Users\bperavala\Ado"
+$outFile = "ado_{0}_teams_members.csv" -f ($project -replace '[^\w]+','_')
+$outPath = Join-Path $outDir $outFile
+
+# Ensure output folder exists
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+# ---- Auth via PAT ----
+if (-not $env:AZURE_DEVOPS_EXT_PAT) {
+  $patSecure = Read-Host "Enter ADO PAT" -AsSecureString
+  $patPlain  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                 [Runtime.InteropServices.Marshal]::SecureStringToBSTR($patSecure))
+  if (-not $patPlain) { throw "No PAT entered." }
+  $env:AZURE_DEVOPS_EXT_PAT = $patPlain
+}
+
+# ---- Ensure CLI ----
+az extension add --name azure-devops --only-show-errors | Out-Null
+az devops configure --defaults organization=$org project="$project" | Out-Null
+
+# ---------- Helpers ----------
+function Get-Prop {
+  param($obj, [string[]]$names)
+  foreach ($n in $names) {
+    if ($obj -and $obj.PSObject.Properties.Match($n).Count -gt 0) {
+      $v = $obj.$n
+      if ($null -ne $v -and "$v" -ne "") { return $v }
+    }
+  }
+  return $null
+}
+
+function Parse-Identity {
+  param($obj)
+  $candidates = @($obj)
+  foreach ($p in 'identity','member','member.identity') {
+    if ($obj -and $obj.PSObject.Properties.Match($p).Count -gt 0) { $candidates += ,($obj.$p) }
+  }
+  foreach ($cand in $candidates) {
+    if ($cand) {
+      $disp = Get-Prop $cand @('displayName','providerDisplayName','principalName')
+      $mail = Get-Prop $cand @('uniqueName','mailAddress','signInAddress','principalName','mail','userPrincipalName')
+      $desc = Get-Prop $cand @('descriptor','subjectDescriptor')
+      if ($disp -or $mail -or $desc) {
+        $type = ""; if ($desc) { $type = ($desc -split ';')[0] }
+        return [pscustomobject]@{ DisplayName=$disp; Email=$mail; Descriptor=$desc; Type=$type }
+      }
+    }
+  }
+  [pscustomobject]@{ DisplayName=""; Email=""; Descriptor=""; Type="" }
+}
+
+Write-Host "Fetching teams for project '$project'..." -ForegroundColor Cyan
+
+# ---------- Get ALL teams ----------
+$teams = @()
+$skip  = 0
+$top   = 100
+while ($true) {
+  $chunkJson = az devops team list `
+    --organization $org `
+    --project "$project" `
+    --skip $skip `
+    --top  $top `
+    --output json
+  $chunk = if ($chunkJson) { $chunkJson | ConvertFrom-Json } else { @() }
+  if (-not $chunk -or $chunk.Count -eq 0) { break }
+  $teams += $chunk
+  if ($chunk.Count -lt $top) { break }
+  $skip += $top
+}
+if (-not $teams -or $teams.Count -eq 0) { throw "No teams found in project '$project'." }
+
+Write-Host ("Found {0} teams. Fetching members (direct + expand vssgp groups)..." -f $teams.Count) -ForegroundColor Cyan
+
+$rows = @()
+
+foreach ($t in $teams) {
+  $teamName = $t.name
+  $teamId   = $t.id
+
+  $skipM = 0
+  while ($true) {
+    $membersJson = az devops team list-member `
+      --organization $org `
+      --project "$project" `
+      --team "$teamName" `
+      --skip $skipM `
+      --top 100 `
+      --output json
+
+    $parsed  = if ($membersJson) { $membersJson | ConvertFrom-Json } else { @() }
+    if (-not $parsed -or $parsed.Count -eq 0) { break }
+
+    $memberItems = if ($parsed.value) { $parsed.value } else { $parsed }
+
+    foreach ($m in $memberItems) {
+      $id = Parse-Identity $m
+
+      # --------------------------------------------------------------
+      # Logic: include direct users, expand vssgp groups, skip aadgp
+      # --------------------------------------------------------------
+
+      # Role mapping (Admin/User)
+      $isAdmin = $false
+      $isAdminProp = Get-Prop $m @('isTeamAdmin')
+      if ($isAdminProp -ne $null -and [string]$isAdminProp -ne "") {
+        $isAdmin = [System.Convert]::ToBoolean($isAdminProp)
+      }
+      $teamRole = if ($isAdmin) { "Admin" } else { "User" }
+
+      if ($id.Type -eq "vssgp") {
+        # Expand Azure DevOps security group to actual members
+        Write-Host "Expanding vssgp group $($id.DisplayName) in Team $teamName" -ForegroundColor Yellow
+        $groupMembersJson = az devops security group membership list `
+          --id $id.Descriptor `
+          --organization $org `
+          --output json
+        $groupMembers = if ($groupMembersJson) { $groupMembersJson | ConvertFrom-Json } else { @() }
+
+        foreach ($gm in $groupMembers) {
+          $gid = Parse-Identity $gm
+          if ($gid.Type -in @("aad","msa","imp")) {
+            $rows += [pscustomobject]@{
+              Organization   = $org
+              Project        = $project
+              TeamName       = $teamName
+              TeamId         = $teamId
+              UserName       = $gid.DisplayName
+              UserEmail      = $gid.Email
+              UserDescriptor = $gid.Descriptor
+              UserType       = $gid.Type
+              IsTeamAdmin    = $isAdmin
+              TeamRole       = $teamRole
+            }
+          }
+        }
+      }
+      elseif ($id.Type -eq "aadgp") {
+        # Skip AAD groups
+        continue
+      }
+      else {
+        # Direct user (aad / msa / imp)
+        $rows += [pscustomobject]@{
+          Organization   = $org
+          Project        = $project
+          TeamName       = $teamName
+          TeamId         = $teamId
+          UserName       = $id.DisplayName
+          UserEmail      = $id.Email
+          UserDescriptor = $id.Descriptor
+          UserType       = $id.Type
+          IsTeamAdmin    = $isAdmin
+          TeamRole       = $teamRole
+        }
+      }
+    }
+
+    if ($memberItems.Count -lt 100) { break }
+    $skipM += 100
+  }
+}
+
+# ---------- Export ----------
+$rows | Sort-Object TeamName, TeamRole, UserName | Export-Csv -NoTypeInformation -Path $outPath
+Write-Host "Saved members: $outPath" -ForegroundColor Green
+ii $outPath | Out-Null
+
+# ---- Clean up PAT ----
+Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue
+Write-Host "PAT cleared from session." -ForegroundColor DarkGray
