@@ -1,5 +1,5 @@
 # ============================================
-# Azure DevOps: Teams -> Members (Direct + expand vssgp groups)
+# Azure DevOps: Teams -> Members (Direct users only, skip all groups)
 # Windows PowerShell 5.1 compatible
 # ============================================
 
@@ -81,7 +81,7 @@ while ($true) {
 }
 if (-not $teams -or $teams.Count -eq 0) { throw "No teams found in project '$project'." }
 
-Write-Host ("Found {0} teams. Fetching members (direct + expand vssgp groups)..." -f $teams.Count) -ForegroundColor Cyan
+Write-Host ("Found {0} teams. Fetching members (direct users only, groups excluded)..." -f $teams.Count) -ForegroundColor Cyan
 
 $rows = @()
 
@@ -108,7 +108,7 @@ foreach ($t in $teams) {
       $id = Parse-Identity $m
 
       # --------------------------------------------------------------
-      # Logic: include direct users, expand vssgp groups, skip aadgp
+      # Logic: include ONLY direct users (aad/msa/imp), skip all groups
       # --------------------------------------------------------------
 
       # Role mapping (Admin/User)
@@ -119,39 +119,12 @@ foreach ($t in $teams) {
       }
       $teamRole = if ($isAdmin) { "Admin" } else { "User" }
 
-      if ($id.Type -eq "vssgp") {
-        # Expand Azure DevOps security group to actual members
-        Write-Host "Expanding vssgp group $($id.DisplayName) in Team $teamName" -ForegroundColor Yellow
-        $groupMembersJson = az devops security group membership list `
-          --id $id.Descriptor `
-          --organization $org `
-          --output json
-        $groupMembers = if ($groupMembersJson) { $groupMembersJson | ConvertFrom-Json } else { @() }
-
-        foreach ($gm in $groupMembers) {
-          $gid = Parse-Identity $gm
-          if ($gid.Type -in @("aad","msa","imp")) {
-            $rows += [pscustomobject]@{
-              Organization   = $org
-              Project        = $project
-              TeamName       = $teamName
-              TeamId         = $teamId
-              UserName       = $gid.DisplayName
-              UserEmail      = $gid.Email
-              UserDescriptor = $gid.Descriptor
-              UserType       = $gid.Type
-              IsTeamAdmin    = $isAdmin
-              TeamRole       = $teamRole
-            }
-          }
-        }
-      }
-      elseif ($id.Type -eq "aadgp") {
-        # Skip AAD groups
+      if ($id.Type -in @("vssgp","aadgp")) {
+        # Skip all group-based memberships
         continue
       }
-      else {
-        # Direct user (aad / msa / imp)
+      elseif ($id.Type -in @("aad","msa","imp")) {
+        # Direct user
         $rows += [pscustomobject]@{
           Organization   = $org
           Project        = $project
