@@ -27,21 +27,33 @@ resource "azurerm_network_security_group" "nsg" {
   resource_group_name = azurerm_resource_group.rg.name
 
   security_rule {
-    name                       = "allow-ssh-or-rdp"
+    name                       = "allow-ssh"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_ranges    = var.os_type == "linux" ? ["22"] : ["3389"]
+    destination_port_ranges    = ["22"]
+    source_address_prefix      = var.allowed_cidr
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "allow-rdp"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["3389"]
     source_address_prefix      = var.allowed_cidr
     destination_address_prefix = "*"
   }
 }
 
-# NIC
-resource "azurerm_network_interface" "nic" {
-  name                = "${var.prefix}-nic"
+# NIC for Linux VM
+resource "azurerm_network_interface" "linux_nic" {
+  name                = "${var.prefix}-linux-nic"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
@@ -52,19 +64,36 @@ resource "azurerm_network_interface" "nic" {
   }
 }
 
-# Associate NSG with NIC
-resource "azurerm_network_interface_security_group_association" "nic_nsg" {
-  network_interface_id      = azurerm_network_interface.nic.id
+# NIC for Windows VM
+resource "azurerm_network_interface" "windows_nic" {
+  name                = "${var.prefix}-windows-nic"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.private.id
+    private_ip_address_allocation = "Dynamic"
+  }
+}
+
+# Associate NSG with NICs
+resource "azurerm_network_interface_security_group_association" "linux_nic_nsg" {
+  network_interface_id      = azurerm_network_interface.linux_nic.id
+  network_security_group_id = azurerm_network_security_group.nsg.id
+}
+
+resource "azurerm_network_interface_security_group_association" "windows_nic_nsg" {
+  network_interface_id      = azurerm_network_interface.windows_nic.id
   network_security_group_id = azurerm_network_security_group.nsg.id
 }
 
 # Linux VM
 resource "azurerm_linux_virtual_machine" "linux_vm" {
-  count                 = var.os_type == "linux" ? 1 : 0
   name                  = "${var.prefix}-linux-vm"
   location              = azurerm_resource_group.rg.location
   resource_group_name   = azurerm_resource_group.rg.name
-  size                  = var.vm_size
+  size                  = var.linux_vm_size
   admin_username        = var.admin_username
   disable_password_authentication = true
 
@@ -73,7 +102,7 @@ resource "azurerm_linux_virtual_machine" "linux_vm" {
     public_key = var.ssh_public_key
   }
 
-  network_interface_ids = [azurerm_network_interface.nic.id]
+  network_interface_ids = [azurerm_network_interface.linux_nic.id]
 
   os_disk {
     caching              = "ReadWrite"
@@ -90,15 +119,14 @@ resource "azurerm_linux_virtual_machine" "linux_vm" {
 
 # Windows VM
 resource "azurerm_windows_virtual_machine" "windows_vm" {
-  count               = var.os_type == "windows" ? 1 : 0
   name                = "${var.prefix}-windows-vm"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  size                = var.vm_size
+  size                = var.windows_vm_size
   admin_username      = var.admin_username
   admin_password      = var.admin_password
 
-  network_interface_ids = [azurerm_network_interface.nic.id]
+  network_interface_ids = [azurerm_network_interface.windows_nic.id]
 
   os_disk {
     caching              = "ReadWrite"
