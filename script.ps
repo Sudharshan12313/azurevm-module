@@ -51,9 +51,20 @@ function Parse-Identity {
       $disp = Get-Prop $cand @('displayName','providerDisplayName','principalName')
       $mail = Get-Prop $cand @('uniqueName','mailAddress','signInAddress','principalName','mail','userPrincipalName')
       $desc = Get-Prop $cand @('descriptor','subjectDescriptor')
+
       if ($disp -or $mail -or $desc) {
-        $type = ""; if ($desc) { $type = ($desc -split ';')[0] }
-        return [pscustomobject]@{ DisplayName=$disp; Email=$mail; Descriptor=$desc; Type=$type }
+        $type = ""
+        if ($desc) { $type = ($desc -split ';')[0] }
+
+        # ---- DEBUG PRINTING ----
+        Write-Host ("DEBUG Parse-Identity: Display={0}, Email={1}, Type={2}, Desc={3}" -f $disp,$mail,$type,$desc) -ForegroundColor Yellow
+
+        return [pscustomobject]@{
+          DisplayName=$disp
+          Email=$mail
+          Descriptor=$desc
+          Type=$type
+        }
       }
     }
   }
@@ -107,11 +118,10 @@ foreach ($t in $teams) {
     foreach ($m in $memberItems) {
       $id = Parse-Identity $m
 
-      # DEBUG PRINTING
-      Write-Host ("DEBUG: Team={0}, Name={1}, Email={2}, Type={3}" -f $teamName, $id.DisplayName, $id.Email, $id.Type) -ForegroundColor Yellow
-
       # --------------------------------------------------------------
-      # Logic: include ONLY direct users (aad/msa/imp), skip all groups
+      # Filtering:
+      # - Groups come back with types like vssgp/aadgp/aadgroup → SKIP
+      # - Direct users (aad/msa/imp) → KEEP, but must have an Email/UPN
       # --------------------------------------------------------------
 
       # Role mapping (Admin/User)
@@ -126,7 +136,7 @@ foreach ($t in $teams) {
         Write-Host "SKIP group member: $($id.DisplayName)" -ForegroundColor DarkGray
         continue
       }
-      elseif ($id.Type -in @("aad","msa","imp")) {
+      elseif ($id.Type -in @("aad","msa","imp") -and $id.Email) {
         Write-Host "KEEP user: $($id.DisplayName) <$($id.Email)>" -ForegroundColor Green
         $rows += [pscustomobject]@{
           Organization   = $org
@@ -142,7 +152,7 @@ foreach ($t in $teams) {
         }
       }
       else {
-        Write-Host "UNKNOWN type: $($id.Type) - Skipping $($id.DisplayName)" -ForegroundColor Red
+        Write-Host "UNKNOWN type or missing email: $($id.Type) - Skipping $($id.DisplayName)" -ForegroundColor Red
       }
     }
 
