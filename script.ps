@@ -107,6 +107,9 @@ foreach ($t in $teams) {
     foreach ($m in $memberItems) {
       $id = Parse-Identity $m
 
+      # DEBUG PRINTING
+      Write-Host ("DEBUG: Team={0}, Name={1}, Email={2}, Type={3}" -f $teamName, $id.DisplayName, $id.Email, $id.Type) -ForegroundColor Yellow
+
       # --------------------------------------------------------------
       # Logic: include ONLY direct users (aad/msa/imp), skip all groups
       # --------------------------------------------------------------
@@ -119,12 +122,12 @@ foreach ($t in $teams) {
       }
       $teamRole = if ($isAdmin) { "Admin" } else { "User" }
 
-      if ($id.Type -in @("vssgp","aadgp")) {
-        # Skip all group-based memberships
+      if ($id.Type -in @("vssgp","aadgp","aadgroup")) {
+        Write-Host "SKIP group member: $($id.DisplayName)" -ForegroundColor DarkGray
         continue
       }
       elseif ($id.Type -in @("aad","msa","imp")) {
-        # Direct user
+        Write-Host "KEEP user: $($id.DisplayName) <$($id.Email)>" -ForegroundColor Green
         $rows += [pscustomobject]@{
           Organization   = $org
           Project        = $project
@@ -137,6 +140,9 @@ foreach ($t in $teams) {
           IsTeamAdmin    = $isAdmin
           TeamRole       = $teamRole
         }
+      }
+      else {
+        Write-Host "UNKNOWN type: $($id.Type) - Skipping $($id.DisplayName)" -ForegroundColor Red
       }
     }
 
