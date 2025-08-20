@@ -3,6 +3,7 @@
 # Exclude: 
 #   - Any user who belongs to vssgp groups that are members of the team
 #   - All group containers (vssgp/aadgp)
+#   - All users of type 'imp'
 # Keep:
 #   - Only direct user members of each Team
 # Outputs: TeamName, UserName, UserEmail
@@ -18,7 +19,7 @@ $ErrorActionPreference = "Stop"
 $org = "https://dev.azure.com/ValmontInd"
 $project = "Corp Shared Services"
 $outDir = "C:\Users\bperavala\Ado"
-$outCsv = Join-Path $outDir ("ado_{0}_direct_users_excluding_vssgp.csv" -f ($project -replace '[^\w]+','_'))
+$outCsv = Join-Path $outDir ("ado_{0}_direct_users_excluding_vssgp_imp.csv" -f ($project -replace '[^\w]+','_'))
 
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
@@ -114,6 +115,11 @@ function Expand-ADOGroup {
             'vssgp' { $results += Expand-ADOGroup -GroupDescriptor $id.Descriptor -Visited $Visited }
             'aadgp' { } 
             default { 
+                # Skip imp-type users in group expansion
+                if ($id.Descriptor -and ($id.Descriptor -match '^(?i)imp')) {
+                    Debug-Log "Skipping user of type 'imp' in group: $($id.DisplayName) <$($id.Email)>"
+                    continue
+                }
                 Debug-Log "Expanded user from group: $($id.DisplayName) <$($id.Email)>" 
                 $results += $id 
             }
@@ -181,14 +187,24 @@ foreach ($t in $teams) {
     # Output only direct users
     foreach ($m in $allMemberItems) {
         $id = Parse-Identity $m
+
+        # Skip groups
         if ($id.Descriptor -and ($id.Descriptor -match '^(?i)(vssgp|aadgp)')) { continue }
+
+        # Skip users included via vssgp group expansion
         if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { continue }
+
+        # Skip imp-type users
+        if ($id.Descriptor -and ($id.Descriptor -match '^(?i)imp')) {
+            Debug-Log "Skipping direct user of type 'imp': $($id.DisplayName) <$($id.Email)>"
+            continue
+        }
 
         Debug-Log "Keeping direct user: $($id.DisplayName) <$($id.Email)>"
 
         $rows += [pscustomobject]@{
-            TeamName = $teamName
-            UserName = $id.DisplayName
+            TeamName  = $teamName
+            UserName  = $id.DisplayName
             UserEmail = $id.Email
         }
     }
@@ -196,7 +212,7 @@ foreach ($t in $teams) {
 
 # ---------- Export ----------
 $rows | Sort-Object TeamName, UserName, UserEmail | Export-Csv -NoTypeInformation -Path $outCsv
-Write-Host "Saved direct users (excluding vssgp group members): $outCsv" -ForegroundColor Green
+Write-Host "Saved direct users (excluding vssgp/aadgp/imp users): $outCsv" -ForegroundColor Green
 ii $outCsv | Out-Null
 
 Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue
