@@ -1,219 +1,278 @@
 # ============================================ 
-# Azure DevOps: Teams -> Direct User Members only
+# Azure DevOps: Teams -> Direct User Members only 
 # Exclude: 
-#   - Any user who belongs to vssgp groups that are members of the team
-#   - All group containers (vssgp/aadgp)
-#   - All users of type 'imp'
-# Keep:
-#   - Only direct user members of each Team
-# Outputs: TeamName, UserName, UserEmail
+# - Any user who belongs to vssgp groups that are members of the team 
+# - All group containers (vssgp/aadgp) 
+# - All users of type 'imp' 
+# Keep: 
+# - Only direct user members of each Team 
+# Outputs: TeamName, UserName, UserEmail 
 # ============================================ 
+param( 
+    [switch]$DebugMode # <-- toggle verbose logging 
+) 
 
-param(
-    [switch]$DebugMode   # <-- toggle verbose logging
-)
+$ErrorActionPreference = "Stop" 
 
-$ErrorActionPreference = "Stop"
+# ---- CONFIG ---- 
+$org = "https://dev.azure.com/ValmontInd" 
+$project = "Corp Shared Services" 
+$outDir = "C:\Users\bperavala\Ado" 
+$outCsv = Join-Path $outDir ("ado_{0}_direct_users_excluding_vssgp_imp.csv" -f ($project -replace '[^\w]+','_')) 
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null 
 
-# ---- CONFIG ----
-$org = "https://dev.azure.com/ValmontInd"
-$project = "Corp Shared Services"
-$outDir = "C:\Users\bperavala\Ado"
-$outCsv = Join-Path $outDir ("ado_{0}_direct_users_excluding_vssgp_imp.csv" -f ($project -replace '[^\w]+','_'))
+# ---- Auth via PAT ---- 
+if (-not $env:AZURE_DEVOPS_EXT_PAT) { 
+    $patSecure = Read-Host "Enter ADO PAT" -AsSecureString 
+    $patPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto( 
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($patSecure)) 
+    if (-not $patPlain) { 
+        throw "No PAT entered." 
+    } 
+    $env:AZURE_DEVOPS_EXT_PAT = $patPlain 
+} 
 
-New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+# ---- Ensure CLI + defaults ---- 
+az extension add --name azure-devops --only-show-errors | Out-Null 
+az devops configure --defaults organization=$org project="$project" | Out-Null 
 
-# ---- Auth via PAT ----
-if (-not $env:AZURE_DEVOPS_EXT_PAT) {
-    $patSecure = Read-Host "Enter ADO PAT" -AsSecureString
-    $patPlain  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-                    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($patSecure))
-    if (-not $patPlain) { throw "No PAT entered." }
-    $env:AZURE_DEVOPS_EXT_PAT = $patPlain
-}
+# ---------- Helpers ---------- 
+function Debug-Log { 
+    param([string]$msg) 
+    if ($DebugMode) { 
+        Write-Host "[DEBUG] $msg" -ForegroundColor DarkYellow 
+    } 
+} 
 
-# ---- Ensure CLI + defaults ----
-az extension add --name azure-devops --only-show-errors | Out-Null
-az devops configure --defaults organization=$org project="$project" | Out-Null
+function Get-Prop { 
+    param($obj, [string[]]$names) 
+    foreach ($n in $names) { 
+        if ($obj -and $obj.PSObject.Properties.Match($n).Count -gt 0) { 
+            $v = $obj.$n 
+            if ($null -ne $v -and "$v" -ne "") { 
+                return $v 
+            } 
+        } 
+    } 
+    return $null 
+} 
 
-# ---------- Helpers ----------
-function Debug-Log {
-    param([string]$msg)
-    if ($DebugMode) { Write-Host "[DEBUG] $msg" -ForegroundColor DarkYellow }
-}
-
-function Get-Prop {
-    param($obj, [string[]]$names)
-    foreach ($n in $names) {
-        if ($obj -and $obj.PSObject.Properties.Match($n).Count -gt 0) {
-            $v = $obj.$n
-            if ($null -ne $v -and "$v" -ne "") { return $v }
-        }
-    }
-    return $null
-}
-
-function JsonToItems {
-    param($parsed)
-    if (-not $parsed) { return @() }
-    if ($parsed -is [System.Array]) { return $parsed }
-    elseif ($parsed.PSObject.Properties.Match('members').Count -gt 0 -and $parsed.members) { return $parsed.members }
+function JsonToItems { 
+    param($parsed) 
+    if (-not $parsed) { 
+        return @() 
+    } 
+    if ($parsed -is [System.Array]) { 
+        return $parsed 
+    } 
+    elseif ($parsed.PSObject.Properties.Match('members').Count -gt 0 -and $parsed.members) { 
+        return $parsed.members 
+    } 
     elseif ($parsed.PSObject.Properties.Match('graphMemberships').Count -gt 0 -and $parsed.graphMemberships) { 
-        return $parsed.graphMemberships | ForEach-Object { $_.member }
-    }
-    else { return $parsed.PSObject.Properties.Value }
-}
+        return $parsed.graphMemberships | ForEach-Object { $_.member } 
+    } 
+    else { 
+        return $parsed.PSObject.Properties.Value 
+    } 
+} 
 
-function Parse-Identity {
-    param($obj)
-    $candidates = @($obj)
-    foreach ($p in 'identity','member','member.identity') {
-        if ($obj -and $obj.PSObject.Properties.Match($p).Count -gt 0) {
-            $candidates += ,($obj.$p)
-        }
-    }
-    foreach ($cand in $candidates) {
-        if ($cand) {
-            $disp = Get-Prop $cand @('displayName','providerDisplayName','principalName')
-            $mail = Get-Prop $cand @('uniqueName','mailAddress','signInAddress','principalName','mail','userPrincipalName')
-            $desc = Get-Prop $cand @('descriptor','subjectDescriptor')
-            if ($disp -or $mail -or $desc) {
-                $type = ""
-                if ($desc) { $type = ($desc -split ';')[0] } 
-                return [pscustomobject]@{
-                    DisplayName = $disp
-                    Email       = $mail
-                    Descriptor  = $desc
-                    Type        = $type
-                }
-            }
-        }
-    }
-    [pscustomobject]@{ DisplayName=""; Email=""; Descriptor=""; Type="" }
-}
+function Parse-Identity { 
+    param($obj) 
+    $candidates = @($obj) 
+    foreach ($p in 'identity','member','member.identity') { 
+        if ($obj -and $obj.PSObject.Properties.Match($p).Count -gt 0) { 
+            $candidates += ,($obj.$p) 
+        } 
+    } 
+    
+    foreach ($cand in $candidates) { 
+        if ($cand) { 
+            $disp = Get-Prop $cand @('displayName','providerDisplayName','principalName') 
+            $mail = Get-Prop $cand @('uniqueName','mailAddress','signInAddress','principalName','mail','userPrincipalName') 
+            $desc = Get-Prop $cand @('descriptor','subjectDescriptor') 
+            
+            if ($disp -or $mail -or $desc) { 
+                $type = "" 
+                if ($desc) { 
+                    $type = ($desc -split ';')[0] 
+                } 
+                return [pscustomobject]@{ 
+                    DisplayName = $disp 
+                    Email = $mail 
+                    Descriptor = $desc 
+                    Type = $type 
+                } 
+            } 
+        } 
+    } 
+    [pscustomobject]@{ 
+        DisplayName=""; Email=""; Descriptor=""; Type="" 
+    } 
+} 
 
-function Expand-ADOGroup {
-    param( [string]$GroupDescriptor, [hashtable]$Visited )
-    $results = @()
-    if (-not $GroupDescriptor) { return $results }
-    if ($Visited.ContainsKey($GroupDescriptor)) { return $results }
-    $Visited[$GroupDescriptor] = $true
-
-    $json = az devops security group membership list `
-                --organization $org --id $GroupDescriptor `
-                --relationship members --output json 2>$null
-    if (-not $json -or $json.Trim() -eq "") { return $results }
-
-    $parsed = $null
-    try { $parsed = $json | ConvertFrom-Json } catch { $parsed = $null }
-    $items = JsonToItems $parsed
-    if (-not $items -or $items.Count -eq 0) { return $results }
-
-    foreach ($entry in $items) {
-        $id = Parse-Identity $entry
-        switch ($id.Type) {
-            'vssgp' { $results += Expand-ADOGroup -GroupDescriptor $id.Descriptor -Visited $Visited }
-            'aadgp' { } 
+function Expand-ADOGroup { 
+    param( 
+        [string]$GroupDescriptor, 
+        [hashtable]$Visited 
+    ) 
+    $results = @() 
+    if (-not $GroupDescriptor) { 
+        return $results 
+    } 
+    if ($Visited.ContainsKey($GroupDescriptor)) { 
+        return $results 
+    } 
+    $Visited[$GroupDescriptor] = $true 
+    
+    $json = az devops security group membership list --organization $org --id $GroupDescriptor --relationship members --output json 2>$null 
+    if (-not $json -or $json.Trim() -eq "") { 
+        return $results 
+    } 
+    
+    $parsed = $null 
+    try { 
+        $parsed = $json | ConvertFrom-Json 
+    } catch { 
+        $parsed = $null 
+    } 
+    
+    $items = JsonToItems $parsed 
+    if (-not $items -or $items.Count -eq 0) { 
+        return $results 
+    } 
+    
+    foreach ($entry in $items) { 
+        $id = Parse-Identity $entry 
+        switch ($id.Type) { 
+            'vssgp' { 
+                $results += Expand-ADOGroup -GroupDescriptor $id.Descriptor -Visited $Visited 
+            } 
+            'aadgp' { 
+                # Skip expanding AAD groups as they typically contain external users
+                # that we don't want to include in our direct user count
+            } 
             default { 
-                # Skip imp-type users in group expansion
-                if ($id.Descriptor -and ($id.Descriptor -match '^(?i)imp')) {
-                    Debug-Log "Skipping user of type 'imp' in group: $($id.DisplayName) <$($id.Email)>"
-                    continue
-                }
+                # Skip imp-type users in group expansion 
+                if ($id.Descriptor -and ($id.Descriptor -match '^(?i)imp')) { 
+                    Debug-Log "Skipping user of type 'imp' in group: $($id.DisplayName) <$($id.Email)>" 
+                    continue 
+                } 
                 Debug-Log "Expanded user from group: $($id.DisplayName) <$($id.Email)>" 
                 $results += $id 
+            } 
+        } 
+    } 
+    return $results 
+} 
+
+Write-Host "Fetching teams for project '$project'..." -ForegroundColor Cyan 
+
+# ---------- Get all teams ---------- 
+$teams = @() 
+$skip = 0; $top = 100 
+while ($true) { 
+    $chunkJson = az devops team list --organization $org --project "$project" --skip $skip --top $top --output json 
+    $chunk = if ($chunkJson) { $chunkJson | ConvertFrom-Json } else { @() } 
+    if (-not $chunk -or $chunk.Count -eq 0) { 
+        break 
+    } 
+    $teams += $chunk 
+    if ($chunk.Count -lt $top) { 
+        break 
+    } 
+    $skip += $top 
+} 
+
+if (-not $teams -or $teams.Count -eq 0) { 
+    throw "No teams found in project '$project'." 
+} 
+
+# ---------- Per-team ---------- 
+$rows = @() 
+foreach ($t in $teams) { 
+    $teamName = $t.name 
+    Write-Host "Processing Team: $teamName" -ForegroundColor Yellow 
+    
+    $allMemberItems = @() 
+    $vssgpDescriptors = @() 
+    $skipM = 0 
+    
+    while ($true) { 
+        $membersJson = az devops team list-member --organization $org --project "$project" --team $teamName --skip $skipM --top 100 --output json 
+        $members = if ($membersJson) { $membersJson | ConvertFrom-Json } else { @() } 
+        if (-not $members -or $members.Count -eq 0) { 
+            break 
+        } 
+        
+        $items = JsonToItems $members 
+        $allMemberItems += $items 
+        
+        foreach ($m in $items) { 
+            $id = Parse-Identity $m 
+            if ($id.Descriptor -and ($id.Descriptor -match '^(?i)vssgp')) { 
+                Debug-Log "Found vssgp group in team '$teamName': $($id.DisplayName)" 
+                $vssgpDescriptors += $id.Descriptor 
             }
-        }
-    }
-    return $results
-}
-
-Write-Host "Fetching teams for project '$project'..." -ForegroundColor Cyan
-
-# ---------- Get all teams ----------
-$teams = @()
-$skip = 0; $top = 100
-while ($true) {
-    $chunkJson = az devops team list --organization $org --project "$project" --skip $skip --top $top --output json
-    $chunk = if ($chunkJson) { $chunkJson | ConvertFrom-Json } else { @() }
-    if (-not $chunk -or $chunk.Count -eq 0) { break }
-    $teams += $chunk
-    if ($chunk.Count -lt $top) { break }
-    $skip += $top
-}
-if (-not $teams -or $teams.Count -eq 0) { throw "No teams found in project '$project'." }
-
-# ---------- Per-team ----------
-$rows = @()
-foreach ($t in $teams) {
-    $teamName = $t.name
-    Write-Host "Processing Team: $teamName" -ForegroundColor Yellow
-
-    $allMemberItems = @()
-    $vssgpDescriptors = @()
-    $skipM = 0
-    while ($true) {
-        $membersJson = az devops team list-member --organization $org --project "$project" --team $teamName --skip $skipM --top 100 --output json
-        $members = if ($membersJson) { $membersJson | ConvertFrom-Json } else { @() }
-        if (-not $members -or $members.Count -eq 0) { break }
-        $items = JsonToItems $members
-        $allMemberItems += $items
-
-        foreach ($m in $items) {
-            $id = Parse-Identity $m
-            if ($id.Descriptor -and ($id.Descriptor -match '^(?i)vssgp')) {
-                Debug-Log "Found vssgp group in team '$teamName': $($id.DisplayName)"
-                $vssgpDescriptors += $id.Descriptor
+            # Log AAD users for debugging
+            elseif ($id.Descriptor -and ($id.Descriptor -match '^(?i)aad\.')) {
+                Debug-Log "Found AAD user in team '$teamName': $($id.DisplayName) <$($id.Email)>"
             }
-        }
-
-        if ($items.Count -lt 100) { break }
-        $skipM += 100
-    }
-
-    # Build EXCLUDE set of users from vssgp groups
-    $excludeSet = @{}
-    foreach ($gdesc in ($vssgpDescriptors | Sort-Object -Unique)) {
-        $visited = @{}
-        $expandedUsers = Expand-ADOGroup -GroupDescriptor $gdesc -Visited $visited
-        foreach ($u in $expandedUsers) {
+        } 
+        
+        if ($items.Count -lt 100) { 
+            break 
+        } 
+        $skipM += 100 
+    } 
+    
+    # Build EXCLUDE set of users from vssgp groups 
+    $excludeSet = @{} 
+    foreach ($gdesc in ($vssgpDescriptors | Sort-Object -Unique)) { 
+        $visited = @{} 
+        $expandedUsers = Expand-ADOGroup -GroupDescriptor $gdesc -Visited $visited 
+        foreach ($u in $expandedUsers) { 
             if ($u.Descriptor) { 
-                Debug-Log "Excluding (group member): $($u.DisplayName) <$($u.Email)>"
+                Debug-Log "Excluding (group member): $($u.DisplayName) <$($u.Email)>" 
                 $excludeSet[$u.Descriptor] = $true 
-            }
-        }
-    }
+            } 
+        } 
+    } 
+    
+    # Output only direct users 
+    foreach ($m in $allMemberItems) { 
+        $id = Parse-Identity $m 
+        
+        # Skip groups (only actual groups, not AAD users)
+        if ($id.Descriptor -and ($id.Descriptor -match '^(?i)(vssgp\.|aadgp\.)')) {
+            Debug-Log "Skipping group: $($id.DisplayName) <$($id.Email)>"
+            continue 
+        } 
+        
+        # Skip users included via vssgp group expansion 
+        if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { 
+            Debug-Log "Skipping user from group expansion: $($id.DisplayName) <$($id.Email)>"
+            continue 
+        } 
+        
+        # Skip imp-type users 
+        if ($id.Descriptor -and ($id.Descriptor -match '^(?i)imp')) { 
+            Debug-Log "Skipping direct user of type 'imp': $($id.DisplayName) <$($id.Email)>" 
+            continue 
+        } 
+        
+        Debug-Log "Keeping direct user: $($id.DisplayName) <$($id.Email)>" 
+        $rows += [pscustomobject]@{ 
+            TeamName = $teamName 
+            UserName = $id.DisplayName 
+            UserEmail = $id.Email 
+        } 
+    } 
+} 
 
-    # Output only direct users
-    foreach ($m in $allMemberItems) {
-        $id = Parse-Identity $m
+# ---------- Export ---------- 
+$rows | Sort-Object TeamName, UserName, UserEmail | Export-Csv -NoTypeInformation -Path $outCsv 
+Write-Host "Saved direct users (excluding vssgp/aadgp/imp users): $outCsv" -ForegroundColor Green 
+ii $outCsv | Out-Null 
 
-        # Skip groups
-        if ($id.Descriptor -and ($id.Descriptor -match '^(?i)(vssgp|aadgp)')) { continue }
-
-        # Skip users included via vssgp group expansion
-        if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { continue }
-
-        # Skip imp-type users
-        if ($id.Descriptor -and ($id.Descriptor -match '^(?i)imp')) {
-            Debug-Log "Skipping direct user of type 'imp': $($id.DisplayName) <$($id.Email)>"
-            continue
-        }
-
-        Debug-Log "Keeping direct user: $($id.DisplayName) <$($id.Email)>"
-
-        $rows += [pscustomobject]@{
-            TeamName  = $teamName
-            UserName  = $id.DisplayName
-            UserEmail = $id.Email
-        }
-    }
-}
-
-# ---------- Export ----------
-$rows | Sort-Object TeamName, UserName, UserEmail | Export-Csv -NoTypeInformation -Path $outCsv
-Write-Host "Saved direct users (excluding vssgp/aadgp/imp users): $outCsv" -ForegroundColor Green
-ii $outCsv | Out-Null
-
-Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue
+Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue 
 Write-Host "PAT cleared from session." -ForegroundColor DarkGray
