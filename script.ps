@@ -5,7 +5,7 @@
 #   - All group containers (vssgp) 
 #   - All users of type 'imp' 
 # Keep: 
-#   - Only direct user members of each Team 
+#   - Only direct AAD user members of each Team 
 # Outputs: TeamName, UserName, UserEmail 
 # ============================================ 
 param( 
@@ -105,8 +105,8 @@ function Expand-ADOGroup {
         $id = Parse-Identity $entry 
         switch ($id.Type) { 
             'vssgp' { $results += Expand-ADOGroup -GroupDescriptor $id.Descriptor -Visited $Visited } 
-            'aadgp' { Debug-Log "Skipping AAD group: $($id.DisplayName)"; } 
-            'imp' { Debug-Log "Skipping imp-type user in group: $($id.DisplayName)"; continue } 
+            'aadgp' { Debug-Log "Skipping AAD group: $($id.DisplayName)" } 
+            'imp' { Debug-Log "Skipping imp-type user in group: $($id.DisplayName)" } 
             default { Debug-Log "Expanded user from group: $($id.DisplayName) <$($id.Email)>"; $results += $id } 
         } 
     } 
@@ -152,9 +152,7 @@ foreach ($t in $teams) {
             if ($id.Type -eq 'vssgp') { 
                 $vssgpDescriptors += $id.Descriptor
                 Debug-Log "Found vssgp group in team '$teamName': $($id.DisplayName)"
-            } else {
-                Debug-Log "Found direct user in team '$teamName': $($id.DisplayName) <$($id.Email)>"
-            }
+            } 
         } 
 
         if ($items.Count -lt 100) { break } 
@@ -174,41 +172,39 @@ foreach ($t in $teams) {
         } 
     } 
 
-    # Output only direct users 
+    # Output only direct AAD users 
     foreach ($m in $allMemberItems) { 
         $id = Parse-Identity $m 
 
-        # Skip actual groups only
         if ($id.Type -eq 'vssgp') { 
-            Debug-Log "Skipping group: $($id.DisplayName)"
+            Debug-Log "Skipping group container: $($id.DisplayName)" 
             continue 
-        }
-
-        # Skip users included via vssgp group expansion 
-        if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { 
-            Debug-Log "Skipping user from group expansion: $($id.DisplayName) <$($id.Email)>" 
-            continue 
-        }
-
-        # Skip imp-type users 
+        } 
         if ($id.Type -eq 'imp') { 
-            Debug-Log "Skipping imp-type direct user: $($id.DisplayName) <$($id.Email)>" 
+            Debug-Log "Skipping imp-type user: $($id.DisplayName) <$($id.Email)>" 
             continue 
-        }
-
-        Debug-Log "Keeping direct user: $($id.DisplayName) <$($id.Email)>" 
-        $rows += [pscustomobject]@{ 
-            TeamName  = $teamName 
-            UserName  = $id.DisplayName 
-            UserEmail = $id.Email 
+        } 
+        if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { 
+            Debug-Log "Skipping user (inherited from vssgp group): $($id.DisplayName) <$($id.Email)>" 
+            continue 
+        } 
+        if ($id.Type -eq 'aad') { 
+            Debug-Log "Keeping direct AAD user: $($id.DisplayName) <$($id.Email)>" 
+            $rows += [pscustomobject]@{ 
+                TeamName  = $teamName 
+                UserName  = $id.DisplayName 
+                UserEmail = $id.Email 
+            } 
+        } else { 
+            Debug-Log "Skipping unexpected type '$($id.Type)' for $($id.DisplayName)" 
         } 
     } 
 } 
 
 # ---------- Export ---------- 
 $rows | Sort-Object TeamName, UserName, UserEmail | Export-Csv -NoTypeInformation -Path $outCsv 
-Write-Host "Saved direct users (excluding vssgp/imp users): $outCsv" -ForegroundColor Green 
+Write-Host "Saved direct AAD users (excluding vssgp/imp/inherited): $outCsv" -ForegroundColor Green 
 ii $outCsv | Out-Null 
 
 Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue 
-Write-Host "PAT cleared from session." -ForegroundColor DarkGray
+Write-Host "PAT cleared from session." -ForegroundColor DarkGray 
