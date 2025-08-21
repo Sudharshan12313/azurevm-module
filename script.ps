@@ -2,14 +2,15 @@
 # Azure DevOps: Teams -> Direct User Members only 
 # Exclude: 
 #   - Any user who belongs to vssgp groups that are members of the team 
-#   - All group containers (vssgp) 
+#   - All group containers (vssgp, aadgp) 
 #   - All users of type 'imp' 
 # Keep: 
 #   - Only direct AAD user members of each Team 
 # Outputs: TeamName, UserName, UserEmail 
 # ============================================ 
 param( 
-    [switch]$DebugMode # <-- toggle verbose logging 
+    [switch]$DebugMode, # <-- toggle verbose logging 
+    [switch]$NoOpenCsv  # <-- prevent auto-opening CSV
 ) 
 
 $ErrorActionPreference = "Stop" 
@@ -105,9 +106,10 @@ function Expand-ADOGroup {
         $id = Parse-Identity $entry 
         switch ($id.Type) { 
             'vssgp' { $results += Expand-ADOGroup -GroupDescriptor $id.Descriptor -Visited $Visited } 
-            'aadgp' { Debug-Log "Skipping AAD group: $($id.DisplayName)" } 
+            'aadgp' { Debug-Log "Skipping nested AAD group: $($id.DisplayName)" } 
             'imp' { Debug-Log "Skipping imp-type user in group: $($id.DisplayName)" } 
-            default { Debug-Log "Expanded user from group: $($id.DisplayName) <$($id.Email)>"; $results += $id } 
+            'aad' { Debug-Log "Expanded user from group (AAD): $($id.DisplayName) <$($id.Email)>"; $results += $id } 
+            default { Debug-Log "Skipping unexpected group member type: $($id.Type) $($id.DisplayName)" } 
         } 
     } 
     return $results 
@@ -131,6 +133,7 @@ if (-not $teams -or $teams.Count -eq 0) { throw "No teams found in project '$pro
 
 # ---------- Per-team ---------- 
 $rows = @() 
+$summary = @() 
 foreach ($t in $teams) { 
     $teamName = $t.name 
     Write-Host "Processing Team: $teamName" -ForegroundColor Yellow 
@@ -172,39 +175,41 @@ foreach ($t in $teams) {
         } 
     } 
 
+    $directCount = 0 
     # Output only direct AAD users 
     foreach ($m in $allMemberItems) { 
         $id = Parse-Identity $m 
 
-        if ($id.Type -eq 'vssgp') { 
-            Debug-Log "Skipping group container: $($id.DisplayName)" 
-            continue 
-        } 
-        if ($id.Type -eq 'imp') { 
-            Debug-Log "Skipping imp-type user: $($id.DisplayName) <$($id.Email)>" 
-            continue 
-        } 
-        if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { 
-            Debug-Log "Skipping user (inherited from vssgp group): $($id.DisplayName) <$($id.Email)>" 
-            continue 
-        } 
+        # NOTE: We explicitly skip groups & imp, and exclude vssgp-expanded users
+        if ($id.Type -in @('vssgp','aadgp')) { continue } 
+        if ($id.Type -eq 'imp') { continue } 
+        if ($id.Descriptor -and $excludeSet.ContainsKey($id.Descriptor)) { continue } 
+
         if ($id.Type -eq 'aad') { 
-            Debug-Log "Keeping direct AAD user: $($id.DisplayName) <$($id.Email)>" 
             $rows += [pscustomobject]@{ 
                 TeamName  = $teamName 
                 UserName  = $id.DisplayName 
                 UserEmail = $id.Email 
             } 
-        } else { 
-            Debug-Log "Skipping unexpected type '$($id.Type)' for $($id.DisplayName)" 
+            $directCount++ 
         } 
     } 
+
+    $summary += [pscustomobject]@{ TeamName=$teamName; DirectAADUsers=$directCount } 
 } 
 
 # ---------- Export ---------- 
-$rows | Sort-Object TeamName, UserName, UserEmail | Export-Csv -NoTypeInformation -Path $outCsv 
+$rows | Sort-Object TeamName, UserName, UserEmail -Unique | Export-Csv -NoTypeInformation -Path $outCsv 
 Write-Host "Saved direct AAD users (excluding vssgp/imp/inherited): $outCsv" -ForegroundColor Green 
-ii $outCsv | Out-Null 
+
+# ---------- Summary ---------- 
+Write-Host "`n========= SUMMARY =========" -ForegroundColor Cyan 
+foreach ($s in $summary) { 
+    Write-Host "$($s.TeamName): $($s.DirectAADUsers) direct AAD users" -ForegroundColor White 
+} 
+Write-Host "===========================" -ForegroundColor Cyan 
+
+if (-not $NoOpenCsv) { ii $outCsv | Out-Null } 
 
 Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue 
 Write-Host "PAT cleared from session." -ForegroundColor DarkGray 
