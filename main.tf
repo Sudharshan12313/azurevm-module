@@ -1,18 +1,15 @@
-# Resource Group
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
 }
 
-# Virtual Network
 resource "azurerm_virtual_network" "vnet" {
   name                = "${var.prefix}-vnet"
   address_space       = [var.vnet_cidr]
-  location            = azurerm_resource_group.rg.location
+  location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
 }
 
-# Subnet (Private)
 resource "azurerm_subnet" "private" {
   name                 = "${var.prefix}-private-subnet"
   resource_group_name  = azurerm_resource_group.rg.name
@@ -20,10 +17,9 @@ resource "azurerm_subnet" "private" {
   address_prefixes     = [var.subnet_cidr]
 }
 
-# NSG
 resource "azurerm_network_security_group" "nsg" {
   name                = "${var.prefix}-nsg"
-  location            = azurerm_resource_group.rg.location
+  location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
 
   security_rule {
@@ -34,7 +30,7 @@ resource "azurerm_network_security_group" "nsg" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_ranges    = ["22"]
-    source_address_prefix      = var.allowed_cidr
+    source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
 
@@ -46,15 +42,15 @@ resource "azurerm_network_security_group" "nsg" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_ranges    = ["3389"]
-    source_address_prefix      = var.allowed_cidr
+    source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
 }
 
-# NIC for Linux VM
-resource "azurerm_network_interface" "linux_nic" {
-  name                = "${var.prefix}-linux-nic"
-  location            = azurerm_resource_group.rg.location
+resource "azurerm_network_interface" "vm_nic" {
+  for_each            = { for vm in var.vms : vm.name => vm }
+  name                = "${each.value.name}-nic"
+  location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
 
   ip_configuration {
@@ -64,37 +60,20 @@ resource "azurerm_network_interface" "linux_nic" {
   }
 }
 
-# NIC for Windows VM
-resource "azurerm_network_interface" "windows_nic" {
-  name                = "${var.prefix}-windows-nic"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.private.id
-    private_ip_address_allocation = "Dynamic"
-  }
-}
-
-# Associate NSG with NICs
-resource "azurerm_network_interface_security_group_association" "linux_nic_nsg" {
-  network_interface_id      = azurerm_network_interface.linux_nic.id
+resource "azurerm_network_interface_security_group_association" "vm_nic_assoc" {
+  for_each                  = azurerm_network_interface.vm_nic
+  network_interface_id      = each.value.id
   network_security_group_id = azurerm_network_security_group.nsg.id
 }
 
-resource "azurerm_network_interface_security_group_association" "windows_nic_nsg" {
-  network_interface_id      = azurerm_network_interface.windows_nic.id
-  network_security_group_id = azurerm_network_security_group.nsg.id
-}
-
-# Linux VM
 resource "azurerm_linux_virtual_machine" "linux_vm" {
-  name                  = "${var.prefix}-linux-vm"
-  location              = azurerm_resource_group.rg.location
-  resource_group_name   = azurerm_resource_group.rg.name
-  size                  = var.linux_vm_size
-  admin_username        = var.admin_username
+  for_each = { for vm in var.vms : vm.name => vm if vm.os_type == "linux" }
+
+  name                = each.value.name
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  size                = each.value.size
+  admin_username      = var.admin_username
   disable_password_authentication = true
 
   admin_ssh_key {
@@ -102,7 +81,7 @@ resource "azurerm_linux_virtual_machine" "linux_vm" {
     public_key = var.ssh_public_key
   }
 
-  network_interface_ids = [azurerm_network_interface.linux_nic.id]
+  network_interface_ids = [azurerm_network_interface.vm_nic[each.key].id]
 
   os_disk {
     caching              = "ReadWrite"
@@ -117,16 +96,17 @@ resource "azurerm_linux_virtual_machine" "linux_vm" {
   }
 }
 
-# Windows VM
 resource "azurerm_windows_virtual_machine" "windows_vm" {
-  name                = "${var.prefix}-windows-vm"
-  location            = azurerm_resource_group.rg.location
+  for_each = { for vm in var.vms : vm.name => vm if vm.os_type == "windows" }
+
+  name                = each.value.name
+  location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
-  size                = var.windows_vm_size
+  size                = each.value.size
   admin_username      = var.admin_username
   admin_password      = var.admin_password
 
-  network_interface_ids = [azurerm_network_interface.windows_nic.id]
+  network_interface_ids = [azurerm_network_interface.vm_nic[each.key].id]
 
   os_disk {
     caching              = "ReadWrite"
