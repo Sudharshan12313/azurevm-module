@@ -36,7 +36,6 @@ variable "subnet_cidr" {
   }
 }
 
-
 variable "admin_username" {
   description = "Admin username for all VMs"
   type        = string
@@ -53,15 +52,28 @@ variable "admin_password" {
   sensitive   = true
 }
 
-variable "vms" {
-  description = "List of virtual machines to create (Linux and Windows)"
+# New VMs for this run
+variable "new_vms" {
+  description = "List of new VMs to add in this run (append-only model)"
   type = list(object({
     name    = string
     os_type = string # linux or windows
     size    = string
   }))
+  default = []
   validation {
-    condition     = alltrue([for vm in var.vms : contains(["linux", "windows"], vm.os_type)])
+    condition     = alltrue([for vm in var.new_vms : contains(["linux", "windows"], vm.os_type)])
     error_message = "Each VM os_type must be either 'linux' or 'windows'."
   }
+}
+
+# TF Cloud remote state config
+variable "tfcloud_org" {
+  description = "Terraform Cloud organization name"
+  type        = string
+}
+
+variable "tfcloud_workspace" {
+  description = "Terraform Cloud workspace name (same as this one)"
+  type        = string
 }
