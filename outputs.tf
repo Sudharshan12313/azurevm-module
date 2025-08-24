@@ -1,4 +1,6 @@
 output "vm_private_ips" {
-  description = "Private IP addresses of all VMs"
-  value       = azurerm_network_interface.nic[*].private_ip_address
+  value = {
+    for name, nic in azurerm_network_interface.vm_nic :
+    name => nic.ip_configuration[0].private_ip_address
+  }
 }
