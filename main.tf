@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Core Network Resources
+# ------------------------------------------------------------------------------
+
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
@@ -47,8 +51,32 @@ resource "azurerm_network_security_group" "nsg" {
   }
 }
 
+# ------------------------------------------------------------------------------
+# State-Driven Append Model for VMs
+# ------------------------------------------------------------------------------
+
+# Pull in existing VMs from tfstate (if any)
+data "terraform_remote_state" "this" {
+  backend = "remote"
+  config = {
+    organization = var.tfcloud_org
+    workspaces = {
+      name = var.tfcloud_workspace
+    }
+  }
+}
+
+locals {
+  old_vms = try(data.terraform_remote_state.this.outputs.all_vms, [])
+  all_vms = concat(local.old_vms, var.new_vms)
+}
+
+# ------------------------------------------------------------------------------
+# NICs
+# ------------------------------------------------------------------------------
+
 resource "azurerm_network_interface" "vm_nic" {
-  for_each            = { for vm in var.vms : vm.name => vm }
+  for_each            = { for vm in local.all_vms : vm.name => vm }
   name                = "${each.value.name}-nic"
   location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
@@ -66,8 +94,12 @@ resource "azurerm_network_interface_security_group_association" "vm_nic_assoc" {
   network_security_group_id = azurerm_network_security_group.nsg.id
 }
 
+# ------------------------------------------------------------------------------
+# Linux VMs
+# ------------------------------------------------------------------------------
+
 resource "azurerm_linux_virtual_machine" "linux_vm" {
-  for_each = { for vm in var.vms : vm.name => vm if vm.os_type == "linux" }
+  for_each = { for vm in local.all_vms : vm.name => vm if vm.os_type == "linux" }
 
   name                = each.value.name
   location            = var.location
@@ -96,8 +128,12 @@ resource "azurerm_linux_virtual_machine" "linux_vm" {
   }
 }
 
+# ------------------------------------------------------------------------------
+# Windows VMs
+# ------------------------------------------------------------------------------
+
 resource "azurerm_windows_virtual_machine" "windows_vm" {
-  for_each = { for vm in var.vms : vm.name => vm if vm.os_type == "windows" }
+  for_each = { for vm in local.all_vms : vm.name => vm if vm.os_type == "windows" }
 
   name                = each.value.name
   location            = var.location
